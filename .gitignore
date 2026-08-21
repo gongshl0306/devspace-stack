@@ -16,3 +16,6 @@ workspace/*
 cloudflared/config.yml
 cloudflared/*.json
 cloudflared/*.cert
+
+# Static Bearer token for clients without OAuth support (generated)
+.mcp-bearer-token

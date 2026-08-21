@@ -35,6 +35,9 @@ services:
       # Secrets + the public origin come from .env (see .env.example).
       DEVSPACE_OAUTH_OWNER_TOKEN: ${DEVSPACE_OAUTH_OWNER_TOKEN:?Set DEVSPACE_OAUTH_OWNER_TOKEN in .env}
       DEVSPACE_PUBLIC_BASE_URL: ${DEVSPACE_PUBLIC_BASE_URL:?Set DEVSPACE_PUBLIC_BASE_URL in .env}
+      # Access token lifetime (seconds). Long by default so static-Bearer
+      # clients can use a token obtained once via the OAuth flow.
+      DEVSPACE_OAUTH_ACCESS_TOKEN_TTL_SECONDS: ${DEVSPACE_OAUTH_ACCESS_TOKEN_TTL_SECONDS:-31536000}
       # Non-secret config lives in devspace-config/config.json (mounted below).
     volumes:
       # Your local code directory, exposed to DevSpace as /workspace.
