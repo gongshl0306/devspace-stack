@@ -1,0 +1,453 @@
+# Deployment Record — DevSpace MCP on WSL2 + Docker + Cloudflare Tunnel
+
+> 部署过程记录 — DevSpace MCP on WSL2 + Docker + Cloudflare Tunnel
+>
+> This document records the **actual** deployment of this stack on a WSL2
+> Ubuntu machine, including every pitfall hit and how it was resolved. It is
+> bilingual: each section is given in English, then 中文.
+>
+> 本文档记录了该栈在一台 WSL2 Ubuntu 机器上的**真实**部署过程，包括踩过的每个坑
+> 及其解决方法。中英双语：每节先英文，后中文。
+
+- **Date / 日期**: 2026-08-20
+- **Host / 主机**: WSL2 Ubuntu, Docker 28.3.3, cloudflared 2026.8.2
+- **Result / 结果**: fully working end-to-end, verified over public HTTPS
+  全链路打通，已通过公网 HTTPS 验证
+
+---
+
+## 1. Goal & Architecture / 目标与架构
+
+**EN**
+
+Deploy the self-hosted [DevSpace](https://github.com/Waishnav/devspace) MCP
+server ("turn ChatGPT into Codex") so that ChatGPT/Codex can reach it over
+HTTPS on our own domain, **without opening any public port**.
+
+```
+ChatGPT / Codex
+      |
+      |  https://devspace.<your-domain>/mcp
+      v
+Cloudflare Tunnel (cloudflared, outbound-only)
+      |
+      |  http://devspace:7676   (internal Docker network)
+      v
+DevSpace container  (MCP server, OAuth owner-token auth)
+      |
+      |  ./workspace  ->  /workspace
+      v
+Your local code (WSL2)
+```
+
+Hard constraints:
+
+- No public ports — the tunnel connects *outbound* to Cloudflare's edge.
+- Container auto-restart (`restart: unless-stopped`).
+- Local code directory volume-mapped into the container.
+- Out of scope: modifying DevSpace source, building an MCP client, Cloudflare
+  Access advanced auth, multi-user permissions.
+
+**中文**
+
+部署自托管的 [DevSpace](https://github.com/Waishnav/devspace) MCP 服务器
+（"把 ChatGPT 变成 Codex"），让 ChatGPT/Codex 能通过我们自己的域名以 HTTPS
+访问它，**且不开放任何公网端口**。
+
+硬性约束：
+
+- 不开放公网端口 —— 隧道是*出站*连接到 Cloudflare 边缘。
+- 容器自动重启（`restart: unless-stopped`）。
+- 本地代码目录以卷映射进容器。
+- 范围之外：修改 DevSpace 源码、开发 MCP 客户端、Cloudflare Access 高级鉴权、
+  多用户权限管理。
+
+---
+
+## 2. Prerequisites / 前置条件
+
+**EN**
+
+- WSL2 Ubuntu with Docker + Docker Compose v2.
+- A Cloudflare account with a domain you control (ours: `gongshl.top`,
+  already proxied/orange-cloud on Cloudflare).
+- `cloudflared` CLI on the WSL host (for the one-time tunnel setup).
+- Node.js is **not** needed on the host — it lives inside the image.
+
+**中文**
+
+- 带 Docker + Docker Compose v2 的 WSL2 Ubuntu。
+- 一个 Cloudflare 账号和一个你控制的域名（我们用的是 `gongshl.top`，
+  已在 Cloudflare 上开启代理/橙色云）。
+- WSL 主机上安装 `cloudflared` CLI（用于一次性隧道配置）。
+- 主机**不需要** Node.js —— 它在镜像里。
+
+---
+
+## 3. Step-by-step / 部署步骤
+
+### 3.1 Project layout / 项目结构
+
+**EN**
+
+```
+devspace-stack/
+├── docker-compose.yml        # devspace + cloudflared services
+├── Dockerfile                # DevSpace image (node:22, non-root, healthcheck)
+├── .env.example              # template — copy to .env
+├── .env                      # your secrets (git-ignored)
+├── .gitignore
+├── LICENSE                   # MIT
+├── THIRD-PARTY.md            # third-party license attribution
+├── devspace-config/
+│   └── config.json           # non-secret DevSpace config (allowed roots, etc.)
+├── cloudflared/
+│   ├── setup-tunnel.sh       # one-time Cloudflare tunnel setup helper
+│   ├── config.yml.example    # tunnel ingress template (committed)
+│   ├── config.yml            # generated per-machine (git-ignored)
+│   └── credentials.json      # tunnel credentials (git-ignored)
+└── workspace/                # your local code, mounted into the container
+```
+
+**中文**
+
+见上方目录树。要点：`config.yml` 和 `credentials.json` 是**每台机器各自生成**的
+（git-ignored），仓库里只提交模板 `config.yml.example`。
+
+### 3.2 Configure `.env` / 配置 `.env`
+
+**EN**
+
+```bash
+cd devspace-stack
+cp .env.example .env
+```
+
+| Variable | Value |
+| --- | --- |
+| `DEVSPACE_OAUTH_OWNER_TOKEN` | Long random secret (≥16 chars): `openssl rand -base64 32`. This is the **Owner password** you enter to approve MCP clients. |
+| `DEVSPACE_PUBLIC_BASE_URL` | Your tunnel origin **without** `/mcp`, e.g. `https://devspace.gongshl.top` |
+| `CLOUDFLARED_UID` / `CLOUDFLARED_GID` | Your host UID:GID (`id -u` / `id -g`) — the user that owns `credentials.json` |
+
+**中文**
+
+| 变量 | 值 |
+| --- | --- |
+| `DEVSPACE_OAUTH_OWNER_TOKEN` | 长随机密钥（≥16 字符）：`openssl rand -base64 32`。这是你批准 MCP 客户端时输入的 **Owner 密码**。 |
+| `DEVSPACE_PUBLIC_BASE_URL` | 隧道公网源地址，**不带** `/mcp`，例如 `https://devspace.gongshl.top` |
+| `CLOUDFLARED_UID` / `CLOUDFLARED_GID` | 你的主机 UID:GID（`id -u` / `id -g`）—— 即 `credentials.json` 的属主用户 |
+
+### 3.3 Build the DevSpace image / 构建 DevSpace 镜像
+
+**EN**
+
+```bash
+docker compose build devspace
+```
+
+The image is multi-stage: a build stage installs `@waishnav/devspace` globally
+(with `python3`/`make`/`g++` for the native `better-sqlite3` module), and a slim
+runtime stage copies only the installed package, runs as the non-root `node`
+user, and defines a `/healthz` healthcheck.
+
+> **Pitfall 1 — slow downloads.** On a network where Docker Hub / apt / npm are
+> slow, build through a host proxy:
+>
+> ```bash
+> docker build --network host \
+>   --build-arg HTTP_PROXY=http://127.0.0.1:7897 \
+>   --build-arg http_proxy=http://127.0.0.1:7897 \
+>   --build-arg HTTPS_PROXY=http://127.0.0.1:7897 \
+>   --build-arg https_proxy=http://127.0.0.1:7897 \
+>   --build-arg NO_PROXY=127.0.0.1,localhost \
+>   --build-arg no_proxy=127.0.0.1,localhost \
+>   -t devspace-mcp:latest .
+> ```
+>
+> This took the build from ~6 KB/s (an hour+) to ~800 KB/s.
+
+> **Pitfall 2 — `groupadd: GID '1000' already exists`.** The
+> `node:22-bookworm-slim` image already ships a `node` user with UID/GID 1000.
+> Don't create a new user — reuse the existing `node` user
+> (`HOME=/home/node`, `USER node`).
+
+**中文**
+
+镜像是多阶段的：构建阶段全局安装 `@waishnav/devspace`（带 `python3`/`make`/`g++`
+用于原生模块 `better-sqlite3`），精简的运行阶段只拷贝安装好的包，以非 root 的
+`node` 用户运行，并定义了 `/healthz` 健康检查。
+
+> **坑 1 —— 下载慢。** 在 Docker Hub / apt / npm 慢的网络下，走主机代理构建：
+> （命令同上，把 `7897` 换成你的代理端口。）这能把构建速度从 ~6 KB/s（一个多小时）
+> 提到 ~800 KB/s。
+
+> **坑 2 —— `groupadd: GID '1000' already exists`。** `node:22-bookworm-slim`
+> 镜像自带 UID/GID 1000 的 `node` 用户。不要新建用户 —— 直接复用现有的 `node`
+> 用户（`HOME=/home/node`，`USER node`）。
+
+### 3.4 Create the Cloudflare Tunnel (one-time) / 创建 Cloudflare 隧道（一次性）
+
+**EN**
+
+Run on the WSL host:
+
+```bash
+./cloudflared/setup-tunnel.sh devspace.gongshl.top
+```
+
+This:
+1. Logs in to Cloudflare (opens a browser) — first time only.
+2. Creates a tunnel named `devspace`.
+3. Routes `devspace.gongshl.top` → the tunnel (DNS CNAME).
+4. Copies the tunnel credentials to `cloudflared/credentials.json`.
+5. Generates `cloudflared/config.yml` from `config.yml.example`.
+
+> **Pitfall 3 — `cloudflared tunnel routing` / `tunnel token` no longer exist.**
+> cloudflared **2026.x removed** the `tunnel routing` and `tunnel token` CLI
+> subcommands. The old "add routing + print token" flow is gone. The supported
+> way now is **named-tunnel mode from a config file**:
+>
+> - ingress (hostname → service) lives in `cloudflared/config.yml`
+> - credentials (TunnelID + TunnelSecret) live in `cloudflared/credentials.json`
+> - the container runs `cloudflared tunnel --no-autoupdate --config /etc/cloudflared/config.yml run`
+>
+> No token, no dashboard.
+
+**中文**
+
+在 WSL 主机上运行：
+
+```bash
+./cloudflared/setup-tunnel.sh devspace.gongshl.top
+```
+
+它会：
+1. 登录 Cloudflare（打开浏览器）—— 仅首次。
+2. 创建名为 `devspace` 的隧道。
+3. 把 `devspace.gongshl.top` 路由到隧道（DNS CNAME）。
+4. 把隧道凭证复制到 `cloudflared/credentials.json`。
+5. 从 `config.yml.example` 生成 `cloudflared/config.yml`。
+
+> **坑 3 —— `cloudflared tunnel routing` / `tunnel token` 已不存在。**
+> cloudflared **2026.x 移除了** `tunnel routing` 和 `tunnel token` 子命令，
+> 旧的"加路由 + 打印 token"流程没了。现在支持的方式是**基于配置文件的
+> named-tunnel 模式**：
+>
+> - ingress（域名 → 服务）写在 `cloudflared/config.yml`
+> - 凭证（TunnelID + TunnelSecret）在 `cloudflared/credentials.json`
+> - 容器运行 `cloudflared tunnel --no-autoupdate --config /etc/cloudflared/config.yml run`
+>
+> 不需要 token，不需要 dashboard。
+
+### 3.5 Start the stack / 启动栈
+
+**EN**
+
+```bash
+docker compose up -d
+docker compose ps
+# devspace      ...   healthy
+# cloudflared   ...   running
+```
+
+> **Pitfall 4 — `permission denied` reading `credentials.json`.** The
+> `cloudflare/cloudflared` image runs as UID **65532** by default, but
+> `credentials.json` is owned by your host user (e.g. UID 1000) with mode 600.
+> The container can't read it. Fix: run the cloudflared container as the file's
+> owner — set `CLOUDFLARED_UID`/`CLOUDFLARED_GID` in `.env` (the compose file
+> maps them to `user: "${CLOUDFLARED_UID}:${CLOUDFLARED_GID}"`).
+>
+> (Note: `chown`-ing the file to 65532 from a non-root host user is not
+> possible, so matching the container's user to the file's owner is the clean fix.)
+
+**中文**
+
+```bash
+docker compose up -d
+docker compose ps
+# devspace      ...   healthy
+# cloudflared   ...   running
+```
+
+> **坑 4 —— 读 `credentials.json` 报 `permission denied`。**
+> `cloudflare/cloudflared` 镜像默认以 UID **65532** 运行，但
+> `credentials.json` 属主是你的主机用户（如 UID 1000）且权限 600，容器读不了。
+> 解决：让 cloudflared 容器以文件属主身份运行 —— 在 `.env` 里设置
+> `CLOUDFLARED_UID`/`CLOUDFLARED_GID`（compose 文件把它们映射到
+> `user: "${CLOUDFLARED_UID}:${CLOUDFLARED_GID}"`）。
+>
+> （注：非 root 主机用户无法把文件 `chown` 成 65532，所以让容器用户与文件属主
+> 一致是干净的解法。）
+
+---
+
+## 4. Verification / 验证
+
+**EN** — all of these were run against the **public** HTTPS endpoint
+(`https://devspace.gongshl.top`), i.e. through the real tunnel:
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Health (no auth) | `curl -fsS https://devspace.gongshl.top/healthz` | `{"ok":true,"name":"devspace"}` |
+| MCP endpoint requires auth | `curl -s -o /dev/null -w '%{http_code}' https://devspace.gongshl.top/mcp` | `401` |
+| OAuth discovery | `GET /.well-known/oauth-protected-resource/mcp` + `/.well-known/oauth-authorization-server` | correct `resource`/endpoints |
+| Dynamic client registration | `POST /register` | returns `client_id` |
+| Authorize (owner token) | `POST /authorize` with `owner_token` | `302` with `code` |
+| Token exchange | `POST /token` | `access_token` |
+| MCP initialize | `POST /mcp` | `protocolVersion 2025-06-18`, session id |
+| tools/list | `POST /mcp` | `open_workspace`, … |
+| **open_workspace** | `tools/call open_workspace {path:"/workspace"}` | `workspaceId: ws_…` |
+| Workspace mount R/W | write file on host → read in container | visible both ways |
+| No public ports | `docker inspect devspace … .NetworkSettings.Ports` | `{"7676/tcp":null}` |
+
+The full OAuth + `open_workspace` flow was exercised with a script
+(`/tmp/mcp-oauth-test.sh` style): register → authorize (PKCE S256 + owner token)
+→ token → initialize → `tools/call open_workspace`.
+
+**中文** —— 以下全部针对**公网** HTTPS 端点（`https://devspace.gongshl.top`）
+执行，即走真实隧道：
+
+| 检查项 | 命令 | 结果 |
+| --- | --- | --- |
+| 健康检查（无鉴权） | `curl -fsS https://devspace.gongshl.top/healthz` | `{"ok":true,"name":"devspace"}` |
+| MCP 端点需鉴权 | `curl -s -o /dev/null -w '%{http_code}' https://devspace.gongshl.top/mcp` | `401` |
+| OAuth 发现 | `GET /.well-known/oauth-protected-resource/mcp` + `/.well-known/oauth-authorization-server` | `resource`/端点正确 |
+| 动态客户端注册 | `POST /register` | 返回 `client_id` |
+| 授权（owner token） | 带 `owner_token` 的 `POST /authorize` | 带 `code` 的 `302` |
+| 换 token | `POST /token` | `access_token` |
+| MCP initialize | `POST /mcp` | `protocolVersion 2025-06-18`，session id |
+| tools/list | `POST /mcp` | `open_workspace` 等 |
+| **open_workspace** | `tools/call open_workspace {path:"/workspace"}` | `workspaceId: ws_…` |
+| workspace 挂载读写 | 宿主机写文件 → 容器内读 | 双向可见 |
+| 无公网端口 | `docker inspect devspace … .NetworkSettings.Ports` | `{"7676/tcp":null}` |
+
+完整 OAuth + `open_workspace` 流程用脚本跑通：注册 → 授权（PKCE S256 + owner
+token）→ 换 token → initialize → `tools/call open_workspace`。
+
+---
+
+## 5. Auto-restart & WSL recovery / 自动重启与 WSL 恢复
+
+**EN**
+
+Both services use `restart: unless-stopped`. Semantics:
+
+- Container **crashes** → Docker restarts it.
+- **Docker daemon restarts** (this is what happens on a WSL reboot) →
+  containers come back automatically.
+- `docker kill` / `docker stop` (you stopped it on purpose) → **not** restarted.
+  This is by design, not a bug.
+
+After a WSL reboot:
+
+```bash
+sudo service docker start        # if the daemon isn't up
+cd devspace-stack
+docker compose up -d             # no-op if already running
+docker compose ps
+curl -fsS https://devspace.gongshl.top/healthz
+```
+
+> **Observation (environment quirk, not a config issue).** On this WSL2 Docker
+> setup, sending `SIGKILL` to the container's PID 1 (via
+> `node -e 'process.kill(1,"SIGKILL")'`) did **not** terminate the process —
+> `/proc/1`'s start time stayed unchanged and the container kept running. So a
+> crash could not be simulated that way here. The `unless-stopped` policy is
+> confirmed present via `docker inspect`; the daemon-restart path is the one that
+> matters for WSL recovery and is the standard guarantee of this policy.
+
+**中文**
+
+两个服务都用 `restart: unless-stopped`。语义：
+
+- 容器**崩溃** → Docker 自动重启它。
+- **Docker 守护进程重启**（WSL 重启时正是这种情况）→ 容器自动回来。
+- `docker kill` / `docker stop`（你主动停的）→ **不会**重启。这是设计如此，不是 bug。
+
+WSL 重启后：
+
+```bash
+sudo service docker start        # 如果守护进程没起来
+cd devspace-stack
+docker compose up -d             # 已在运行则是空操作
+docker compose ps
+curl -fsS https://devspace.gongshl.top/healthz
+```
+
+> **观察（环境怪癖，非配置问题）。** 在这套 WSL2 Docker 环境里，向容器 PID 1
+> 发送 `SIGKILL`（通过 `node -e 'process.kill(1,"SIGKILL")'`）**没有**终止该进程
+> —— `/proc/1` 的启动时间没变，容器继续运行。因此无法用这种方式在这里模拟崩溃。
+> `unless-stopped` 策略已通过 `docker inspect` 确认存在；守护进程重启这条路径才是
+> WSL 恢复的关键，也是该策略的标准保证。
+
+---
+
+## 6. Pitfall summary / 踩坑汇总
+
+| # | Symptom / 现象 | Cause / 原因 | Fix / 解决 |
+| --- | --- | --- | --- |
+| 1 | Build ~6 KB/s, 1hr+ / 构建极慢 | Slow network to Docker Hub/apt/npm / 网络慢 | Build via host proxy (`--network host` + `HTTP(S)_PROXY` build-args) / 走主机代理构建 |
+| 2 | `groupadd: GID '1000' already exists` / GID 冲突 | `node:22-bookworm-slim` already has `node` UID/GID 1000 / 镜像自带 node 用户 | Reuse the existing `node` user / 复用现有 node 用户 |
+| 3 | `tunnel routing` / `tunnel token`: "no valid argument" / 子命令不存在 | Removed in cloudflared 2026.x / 2026.x 已移除 | Named-tunnel mode: `config.yml` + `credentials.json` / 用配置文件 + 凭证文件模式 |
+| 4 | `permission denied` on `credentials.json` / 凭证文件权限拒绝 | Image runs as UID 65532; file owned by host UID 1000, mode 600 / 镜像 UID 与文件属主不符 | `user: "${CLOUDFLARED_UID}:${CLOUDFLARED_GID}"` in compose / compose 里指定容器用户 |
+| 5 | `docker kill` doesn't auto-restart / kill 后不自动重启 | `unless-stopped` skips user-initiated stops / 该策略不重启用户主动停止 | Expected behavior; crash/daemon-restart still auto-restart / 属预期，崩溃/守护进程重启仍会自动重启 |
+
+---
+
+## 7. Connecting an MCP client / 连接 MCP 客户端
+
+**EN**
+
+Point your client at:
+
+```
+https://devspace.gongshl.top/mcp
+```
+
+On first connect, DevSpace shows an approval page — enter the **Owner password**
+(`DEVSPACE_OAUTH_OWNER_TOKEN`). After that the client can open a project under
+`/workspace` and read/edit/run code.
+
+```json
+{
+  "mcpServers": {
+    "devspace": {
+      "url": "https://devspace.gongshl.top/mcp"
+    }
+  }
+}
+```
+
+**中文**
+
+把客户端指向：
+
+```
+https://devspace.gongshl.top/mcp
+```
+
+首次连接时 DevSpace 会显示批准页 —— 输入 **Owner 密码**
+（`DEVSPACE_OAUTH_OWNER_TOKEN`）。之后客户端就能打开 `/workspace` 下的项目并
+读/写/运行代码。
+
+---
+
+## 8. Teardown / 拆除
+
+**EN**
+
+```bash
+docker compose down          # stop + remove containers (keeps volumes)
+docker compose down -v       # also remove state/worktree volumes
+# remove the tunnel + DNS record:
+cloudflared tunnel delete devspace
+```
+
+**中文**
+
+```bash
+docker compose down          # 停止并删除容器（保留卷）
+docker compose down -v       # 同时删除 state/worktree 卷
+# 删除隧道 + DNS 记录：
+cloudflared tunnel delete devspace
+```

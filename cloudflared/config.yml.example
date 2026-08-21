@@ -1,0 +1,35 @@
+# =============================================================================
+# Cloudflare Tunnel configuration TEMPLATE (named tunnel, credentials-file mode)
+#
+# This is a template. `setup-tunnel.sh` copies it to `config.yml` and fills in
+# the two placeholders:
+#   __TUNNEL_ID__  -> your tunnel UUID (from `cloudflared tunnel create`)
+#   __HOSTNAME__   -> your public hostname (the argument you pass to the script)
+#
+# The generated `config.yml` is git-ignored (it's per-machine config).
+#
+# The tunnel *credentials* (TunnelID + TunnelSecret) live in credentials.json
+# (git-ignored, also created by setup-tunnel.sh) and are referenced below via
+# `credentials-file`.
+#
+# cloudflared 2026.x removed the `tunnel routing` / `tunnel token` CLI
+# subcommands, so ingress is configured here in the config file instead of on
+# the Cloudflare dashboard.
+# =============================================================================
+
+# The tunnel UUID.
+tunnel: __TUNNEL_ID__
+
+# Where cloudflared reads the tunnel credentials (TunnelID + TunnelSecret).
+credentials-file: /etc/cloudflared/credentials.json
+
+# Ingress rules, evaluated top to bottom. First match wins.
+ingress:
+  # Public hostname -> DevSpace container on the internal Docker network.
+  # `devspace` is the compose service name; 7676 is DevSpace's port.
+  - hostname: __HOSTNAME__
+    service: http://devspace:7676
+
+  # Catch-all: anything that doesn't match above gets a 404.
+  # (Required — every ingress list must end with a terminal rule.)
+  - service: http_status:404

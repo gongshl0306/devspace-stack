@@ -1,0 +1,97 @@
+# =============================================================================
+# DevSpace MCP stack
+#
+#   ChatGPT / Codex
+#        |
+#   https://devspace.<your-domain>          (your own domain, HTTPS)
+#        |
+#   Cloudflare Tunnel  (cloudflared)        (outbound only, no public ports)
+#        |
+#   DevSpace container :7676               (internal Docker network)
+#        |
+#   ./workspace  ->  /workspace            (your local code, WSL)
+#
+# No ports are published to the host. The only public entry point is the
+# Cloudflare Tunnel hostname, which forwards to the DevSpace container over
+# the internal Docker network.
+# =============================================================================
+
+name: devspace-stack
+
+services:
+  # ---------------------------------------------------------------------------
+  # DevSpace MCP server
+  # ---------------------------------------------------------------------------
+  devspace:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: devspace-mcp:latest
+    container_name: devspace
+    restart: unless-stopped
+    # No `ports:` on purpose — DevSpace is only reachable from cloudflared on
+    # the internal network (and locally on the host), never from the internet.
+    environment:
+      # Secrets + the public origin come from .env (see .env.example).
+      DEVSPACE_OAUTH_OWNER_TOKEN: ${DEVSPACE_OAUTH_OWNER_TOKEN:?Set DEVSPACE_OAUTH_OWNER_TOKEN in .env}
+      DEVSPACE_PUBLIC_BASE_URL: ${DEVSPACE_PUBLIC_BASE_URL:?Set DEVSPACE_PUBLIC_BASE_URL in .env}
+      # Non-secret config lives in devspace-config/config.json (mounted below).
+    volumes:
+      # Your local code directory, exposed to DevSpace as /workspace.
+      - ./workspace:/workspace
+      # DevSpace config dir: config.json (+ skills/, agents/ created at runtime).
+      - ./devspace-config:/home/node/.devspace
+      # Persistent SQLite state (OAuth tokens, workspace sessions).
+      - devspace-state:/home/node/state
+      # Managed Git worktrees for parallel coding sessions.
+      - devspace-worktrees:/home/node/worktrees
+    networks:
+      - devspace-net
+    healthcheck:
+      # /healthz returns {"ok":true,"name":"devspace"} without authentication.
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:7676/healthz"]
+      interval: 15s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+  # ---------------------------------------------------------------------------
+  # Cloudflare Tunnel (outbound-only; no inbound/public ports)
+  # ---------------------------------------------------------------------------
+  cloudflared:
+    image: cloudflare/cloudflared:2026.8.2
+    container_name: cloudflared
+    restart: unless-stopped
+    # Run as the host user that owns cloudflared/credentials.json so the
+    # container can read the 600-permission credentials file. The image's
+    # default user (65532) cannot read a file owned by another UID.
+    # Set CLOUDFLARED_UID / CLOUDFLARED_GID in .env to your own UID:GID
+    # (check with `id -u` / `id -g` on the host that ran setup-tunnel.sh).
+    user: "${CLOUDFLARED_UID:-1000}:${CLOUDFLARED_GID:-1000}"
+    # Named-tunnel mode: the ingress (hostname -> service) is defined in
+    # cloudflared/config.yml, and the tunnel credentials (TunnelID +
+    # TunnelSecret) come from cloudflared/credentials.json. No token, no
+    # dashboard. (cloudflared 2026.x removed the `tunnel routing`/`token`
+    # CLI subcommands, so this is the supported way to configure a named
+    # tunnel from a config file.)
+    command: tunnel --no-autoupdate --config /etc/cloudflared/config.yml run
+    volumes:
+      - ./cloudflared/config.yml:/etc/cloudflared/config.yml:ro
+      - ./cloudflared/credentials.json:/etc/cloudflared/credentials.json:ro
+    depends_on:
+      devspace:
+        condition: service_healthy
+    networks:
+      - devspace-net
+    # cloudflared has no HTTP health endpoint; the restart policy covers
+    # reconnects. Watch `docker logs -f cloudflared` for tunnel status.
+
+networks:
+  # Regular bridge network (NOT internal) so cloudflared can reach Cloudflare's
+  # edge. DevSpace stays private because it publishes no ports.
+  devspace-net:
+    name: devspace-net
+
+volumes:
+  devspace-state:
+  devspace-worktrees:
