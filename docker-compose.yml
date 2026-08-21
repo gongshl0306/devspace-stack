@@ -9,7 +9,7 @@
 #        |
 #   DevSpace container :7676               (internal Docker network)
 #        |
-#   ./workspace  ->  /workspace            (your local code, WSL)
+#   ./workspace  ->  /workspace            (your local code, Linux host)
 #
 # No ports are published to the host. The only public entry point is the
 # Cloudflare Tunnel hostname, which forwards to the DevSpace container over

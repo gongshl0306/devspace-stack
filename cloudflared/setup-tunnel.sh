@@ -2,7 +2,7 @@
 # =============================================================================
 # Cloudflare Tunnel setup for DevSpace
 #
-# Run this ONCE on the WSL host (not inside a container) to:
+# Run this ONCE on the host (not inside a container) to:
 #   1. Log in to Cloudflare (opens a browser)
 #   2. Create a named tunnel
 #   3. Route your public hostname to the tunnel (DNS CNAME)

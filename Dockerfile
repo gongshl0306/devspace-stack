@@ -31,7 +31,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # The node base image ships a 'node' user (UID 1000, GID 1000) — the same UID
-# as a typical WSL host user, so files written into the mounted workspace keep
+# as a typical Linux host user, so files written into the mounted workspace keep
 # the host user's ownership. We run as that existing user (no new user needed).
 # If your host user is not UID 1000, adjust the build to create a matching user.
 ENV HOME=/home/node \
