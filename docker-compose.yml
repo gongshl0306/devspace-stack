@@ -26,6 +26,12 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      # Optional faster Debian mirror / npm registry / source builds, set in
+      # .env (see .env.example).
+      args:
+        APT_MIRROR: ${APT_MIRROR:-http://deb.debian.org}
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org}
+        BUILD_FROM_SOURCE: ${BUILD_FROM_SOURCE:-false}
     image: devspace-mcp:latest
     container_name: devspace
     restart: unless-stopped
@@ -62,7 +68,7 @@ services:
   # Cloudflare Tunnel (outbound-only; no inbound/public ports)
   # ---------------------------------------------------------------------------
   cloudflared:
-    image: cloudflare/cloudflared:2026.8.2
+    image: cloudflare/cloudflared:2026.9.1
     container_name: cloudflared
     restart: unless-stopped
     # Run as the host user that owns cloudflared/credentials.json so the

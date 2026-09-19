@@ -74,6 +74,7 @@ Edit `.env`:
 | `DEVSPACE_OAUTH_OWNER_TOKEN` | A long random secret (≥16 chars). Generate: `openssl rand -base64 32`. This is the **Owner password** you enter to approve MCP clients. Keep it private. |
 | `DEVSPACE_PUBLIC_BASE_URL` | Your tunnel origin **without** `/mcp`, e.g. `https://devspace.example.com` |
 | `CLOUDFLARED_UID` / `CLOUDFLARED_GID` | Your host UID:GID (`id -u` / `id -g`) — the user that owns `cloudflared/credentials.json` |
+| `APT_MIRROR` / `NPM_REGISTRY` / `BUILD_FROM_SOURCE` | Optional build tuning, all unset by default (official sources). If apt/npm downloads crawl from your network, set e.g. `APT_MIRROR=http://mirrors.tuna.tsinghua.edu.cn` and `NPM_REGISTRY=https://registry.npmmirror.com`; `BUILD_FROM_SOURCE=true` compiles native modules locally instead of fetching prebuilt binaries from GitHub (useful where that download hangs). |
 
 The non-secret DevSpace config lives in `devspace-config/config.json`. The key setting is
 `allowedRoots` — the folders DevSpace may open. It's set to `/workspace` (the mounted
@@ -308,6 +309,7 @@ cp .env.example .env
 | `DEVSPACE_OAUTH_OWNER_TOKEN` | 长随机密钥（≥16 字符）：`openssl rand -base64 32`。这是你批准 MCP 客户端时输入的 **Owner 密码**，务必保密。 |
 | `DEVSPACE_PUBLIC_BASE_URL` | 隧道公网源地址，**不带** `/mcp`，例如 `https://devspace.example.com` |
 | `CLOUDFLARED_UID` / `CLOUDFLARED_GID` | 你的主机 UID:GID（`id -u` / `id -g`）—— 即 `cloudflared/credentials.json` 的属主用户 |
+| `APT_MIRROR` / `NPM_REGISTRY` / `BUILD_FROM_SOURCE` | 可选构建调优，默认全部不设（走官方源）。若你的网络访问官方源很慢，可设 `APT_MIRROR=http://mirrors.tuna.tsinghua.edu.cn`、`NPM_REGISTRY=https://registry.npmmirror.com` 加速；`BUILD_FROM_SOURCE=true` 表示本地编译原生模块而非下载 GitHub 预编译包（适用于预编译包下载挂死的网络）。 |
 
 非密钥的 DevSpace 配置在 `devspace-config/config.json`。关键项是 `allowedRoots` ——
 DevSpace 可以打开的目录，默认设为 `/workspace`（挂载目录）。挂载更多目录时在这里加。

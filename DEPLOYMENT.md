@@ -66,6 +66,7 @@ cp .env.example .env
 | `DEVSPACE_OAUTH_OWNER_TOKEN` | Long random secret (≥16 chars): `openssl rand -base64 32`. This is the **Owner password** you enter to approve MCP clients. |
 | `DEVSPACE_PUBLIC_BASE_URL` | Your tunnel origin **without** `/mcp`, e.g. `https://devspace.gongshl.top` |
 | `CLOUDFLARED_UID` / `CLOUDFLARED_GID` | Your host UID:GID (`id -u` / `id -g`) — the user that owns `credentials.json` |
+| `APT_MIRROR` / `NPM_REGISTRY` / `BUILD_FROM_SOURCE` | Optional build tuning, all unset by default (official sources). Set e.g. `APT_MIRROR=http://mirrors.tuna.tsinghua.edu.cn` / `NPM_REGISTRY=https://registry.npmmirror.com` if downloads crawl, or `BUILD_FROM_SOURCE=true` to compile native modules locally instead of fetching prebuilt binaries from GitHub. |
 
 #### 3.2 Build the DevSpace image
 
@@ -299,6 +300,7 @@ cp .env.example .env
 | `DEVSPACE_OAUTH_OWNER_TOKEN` | 长随机密钥（≥16 字符）：`openssl rand -base64 32`。这是你批准 MCP 客户端时输入的 **Owner 密码**。 |
 | `DEVSPACE_PUBLIC_BASE_URL` | 隧道公网源地址，**不带** `/mcp`，例如 `https://devspace.gongshl.top` |
 | `CLOUDFLARED_UID` / `CLOUDFLARED_GID` | 你的主机 UID:GID（`id -u` / `id -g`）—— 即 `credentials.json` 的属主用户 |
+| `APT_MIRROR` / `NPM_REGISTRY` / `BUILD_FROM_SOURCE` | 可选构建调优，默认全部不设（走官方源）。官方源下载慢时可设 `APT_MIRROR=http://mirrors.tuna.tsinghua.edu.cn` / `NPM_REGISTRY=https://registry.npmmirror.com` 加速，或设 `BUILD_FROM_SOURCE=true` 本地编译原生模块而非下载 GitHub 预编译包。 |
 
 #### 3.2 构建 DevSpace 镜像
 
